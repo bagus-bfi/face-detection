@@ -14,6 +14,7 @@ import asyncio
 from datetime import datetime
 from typing import List, Dict
 import logging
+import mediapipe as mp
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -32,26 +33,151 @@ app.add_middleware(
 
 
 class FaceDetector:
-    """Face detection using OpenCV's Haar Cascade or DNN"""
+    """Face detection using OpenCV's Haar Cascade with sunglasses detection"""
     
-    def __init__(self, method="haar"):
-        self.method = method
+    def __init__(self):
+        # Using Haar Cascade (fast, CPU-friendly)
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        )
+        # Eye cascade for sunglasses detection
+        self.eye_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_eye.xml'
+        )
         
-        if method == "haar":
-            # Using Haar Cascade (fast, CPU-friendly)
-            self.face_cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-            )
-        elif method == "dnn":
-            # Using DNN model (more accurate)
-            model_file = "models/res10_300x300_ssd_iter_140000.caffemodel"
-            config_file = "models/deploy.prototxt"
-            self.net = cv2.dnn.readNetFromCaffe(config_file, model_file)
+        # Initialize MediaPipe Face Mesh for facial landmarks
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=10,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
         
-        logger.info(f"FaceDetector initialized with method: {method}")
+        logger.info("FaceDetector initialized with Haar Cascade method")
     
-    def detect_faces_haar(self, image: np.ndarray) -> List[Dict]:
-        """Detect faces using Haar Cascade"""
+    def detect_sunglasses(self, image: np.ndarray, face_bbox: tuple) -> Dict:
+        """
+        Detect if a person is wearing sunglasses using multiple methods
+        Returns: dict with has_sunglasses (bool) and confidence (float)
+        """
+        x, y, w, h = face_bbox
+        
+        # Extract face ROI
+        face_roi = image[y:y+h, x:x+w]
+        gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        
+        # Method 1: Eye detection using Haar Cascade
+        # If eyes are not detected, likely wearing sunglasses
+        eyes = self.eye_cascade.detectMultiScale(
+            gray_roi,
+            scaleFactor=1.1,
+            minNeighbors=10,
+            minSize=(int(w * 0.1), int(h * 0.1))
+        )
+        
+        # Method 2: Use MediaPipe Face Mesh to detect eye landmarks
+        rgb_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB)
+        results = self.face_mesh.process(rgb_roi)
+        
+        has_sunglasses = False
+        confidence = 0.0
+        method_used = "none"
+        
+        # Analyze eye detection results
+        if len(eyes) == 0:
+            # No eyes detected by Haar Cascade - possible sunglasses
+            has_sunglasses = True
+            confidence = 0.6
+            method_used = "haar_no_eyes"
+        elif len(eyes) == 1:
+            # Only one eye detected - possible sunglasses or side view
+            has_sunglasses = True
+            confidence = 0.5
+            method_used = "haar_partial"
+        else:
+            # Both eyes detected
+            has_sunglasses = False
+            confidence = 0.8
+            method_used = "haar_eyes_visible"
+        
+        # Refine using MediaPipe facial landmarks
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                # Eye region landmarks indices
+                # Left eye: 33, 133, 159, 145
+                # Right eye: 362, 263, 386, 374
+                left_eye_indices = [33, 133, 159, 145]
+                right_eye_indices = [362, 263, 386, 374]
+                
+                # Get eye region visibility score
+                h_roi, w_roi = face_roi.shape[:2]
+                
+                # Calculate eye region contrast (darker regions suggest sunglasses)
+                left_eye_region = self._get_eye_region_roi(
+                    gray_roi, face_landmarks, left_eye_indices, w_roi, h_roi
+                )
+                right_eye_region = self._get_eye_region_roi(
+                    gray_roi, face_landmarks, right_eye_indices, w_roi, h_roi
+                )
+                
+                # Calculate average brightness in eye regions
+                left_brightness = np.mean(left_eye_region) if left_eye_region.size > 0 else 128
+                right_brightness = np.mean(right_eye_region) if right_eye_region.size > 0 else 128
+                avg_brightness = (left_brightness + right_brightness) / 2
+                
+                # If eye region is very dark, likely sunglasses
+                if avg_brightness < 60:
+                    has_sunglasses = True
+                    confidence = min(0.9, confidence + 0.3)
+                    method_used = "mediapipe_dark_eyes"
+                elif avg_brightness < 100 and len(eyes) == 0:
+                    has_sunglasses = True
+                    confidence = 0.75
+                    method_used = "combined_analysis"
+                else:
+                    # Bright eye regions and eyes detected - no sunglasses
+                    has_sunglasses = False
+                    confidence = 0.85
+                    method_used = "mediapipe_bright_eyes"
+        
+        return {
+            "has_sunglasses": has_sunglasses,
+            "confidence": confidence,
+            "method": method_used,
+            "eyes_detected": len(eyes),
+            "eye_brightness": avg_brightness if 'avg_brightness' in locals() else None
+        }
+    
+    def _get_eye_region_roi(self, gray_img: np.ndarray, landmarks, eye_indices: List[int], 
+                           width: int, height: int) -> np.ndarray:
+        """Extract eye region from face using landmarks"""
+        try:
+            points = []
+            for idx in eye_indices:
+                landmark = landmarks.landmark[idx]
+                x = int(landmark.x * width)
+                y = int(landmark.y * height)
+                points.append([x, y])
+            
+            points = np.array(points)
+            x_min, y_min = points.min(axis=0)
+            x_max, y_max = points.max(axis=0)
+            
+            # Add padding
+            padding = 5
+            x_min = max(0, x_min - padding)
+            y_min = max(0, y_min - padding)
+            x_max = min(width, x_max + padding)
+            y_max = min(height, y_max + padding)
+            
+            return gray_img[y_min:y_max, x_min:x_max]
+        except Exception as e:
+            logger.error(f"Error extracting eye region: {e}")
+            return np.array([])
+    
+    def detect(self, image: np.ndarray) -> List[Dict]:
+        """Detect faces using Haar Cascade with sunglasses detection"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(
             gray,
@@ -62,55 +188,22 @@ class FaceDetector:
         
         results = []
         for (x, y, w, h) in faces:
+            # Detect sunglasses for each face
+            sunglasses_info = self.detect_sunglasses(image, (x, y, w, h))
+            
             results.append({
                 "x": int(x),
                 "y": int(y),
                 "width": int(w),
                 "height": int(h),
-                "confidence": 0.95  # Haar doesn't provide confidence
+                "confidence": 0.95,  # Haar doesn't provide confidence
+                "has_sunglasses": sunglasses_info["has_sunglasses"],
+                "sunglasses_confidence": sunglasses_info["confidence"],
+                "sunglasses_detection_method": sunglasses_info["method"],
+                "eyes_detected": sunglasses_info["eyes_detected"]
             })
         
         return results
-    
-    def detect_faces_dnn(self, image: np.ndarray) -> List[Dict]:
-        """Detect faces using DNN model"""
-        h, w = image.shape[:2]
-        blob = cv2.dnn.blobFromImage(
-            cv2.resize(image, (300, 300)),
-            1.0,
-            (300, 300),
-            (104.0, 177.0, 123.0)
-        )
-        
-        self.net.setInput(blob)
-        detections = self.net.forward()
-        
-        results = []
-        for i in range(detections.shape[2]):
-            confidence = detections[0, 0, i, 2]
-            
-            if confidence > 0.5:  # Confidence threshold
-                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                (x1, y1, x2, y2) = box.astype("int")
-                
-                results.append({
-                    "x": int(x1),
-                    "y": int(y1),
-                    "width": int(x2 - x1),
-                    "height": int(y2 - y1),
-                    "confidence": float(confidence)
-                })
-        
-        return results
-    
-    def detect(self, image: np.ndarray) -> List[Dict]:
-        """Main detection method"""
-        if self.method == "haar":
-            return self.detect_faces_haar(image)
-        elif self.method == "dnn":
-            return self.detect_faces_dnn(image)
-        else:
-            return []
 
 
 class ConnectionManager:
@@ -133,7 +226,7 @@ class ConnectionManager:
 
 
 # Initialize
-detector = FaceDetector(method="haar")  # Change to "dnn" for better accuracy
+detector = FaceDetector()
 manager = ConnectionManager()
 
 
@@ -202,7 +295,7 @@ async def root():
         "status": "online",
         "service": "Face Detection API",
         "version": "1.0.0",
-        "detector": detector.method,
+        "detector": "haar",
         "active_connections": len(manager.active_connections)
     }
 
