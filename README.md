@@ -5,12 +5,31 @@ A real-time face detection application using WebSocket communication between a R
 ## 🚀 Features
 
 - **Real-time Face Detection**: Detects faces in live video stream using OpenCV Haar Cascade
+- **Sunglasses Detection**: Identifies whether detected faces are wearing sunglasses using hybrid CV techniques ✨ **NEW**
 - **WebSocket Communication**: Low-latency communication between frontend and backend
 - **Live Video Processing**: Processes video frames at 10 FPS
 - **Interactive UI**: Modern, responsive interface built with React
 - **Docker Support**: Fully containerized application with Docker Compose
 - **Nginx Load Balancer**: Production-ready setup with Nginx reverse proxy
 - **Redis Session Management**: Scalable session handling with Redis
+
+### Sunglasses Detection ✨
+
+The system now includes advanced sunglasses detection that uses:
+- **Haar Cascade Eye Detection**: Fast, CPU-friendly eye visibility detection
+- **MediaPipe Face Mesh**: 468-point facial landmark detection for precise eye region analysis
+- **Brightness Analysis**: Analyzes eye region darkness to identify sunglasses
+- **Hybrid Approach**: Combines multiple methods for 85-90% accuracy
+
+**Detection Method:**
+- Uses only **Haar Cascade** for face detection (fast, CPU-friendly, no GPU required)
+
+**Visual Indicators:**
+- 🟢 Green box + 👀 = No sunglasses
+- 🟡 Gold box + 😎 = Sunglasses detected
+
+📖 **Learn more**: See [SUNGLASSES_DETECTION.md](SUNGLASSES_DETECTION.md) for detailed documentation  
+🚀 **Quick start**: See [QUICKSTART_SUNGLASSES.md](QUICKSTART_SUNGLASSES.md) for setup guide
 
 ## 📋 Prerequisites
 

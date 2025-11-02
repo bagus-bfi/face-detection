@@ -179,16 +179,30 @@ const FaceDetectionClient = () => {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     faces.forEach((face, index) => {
-      const { x, y, width, height, confidence } = face;
+      const {
+        x,
+        y,
+        width,
+        height,
+        confidence,
+        has_sunglasses,
+        sunglasses_confidence,
+      } = face;
+
+      // Choose color based on sunglasses detection
+      const boxColor = has_sunglasses ? "#FFD700" : "#00ff00"; // Gold for sunglasses, green for no sunglasses
+      const labelBgColor = has_sunglasses
+        ? "rgba(255, 215, 0, 0.8)"
+        : "rgba(0, 255, 0, 0.8)";
 
       // Draw rectangle
-      ctx.strokeStyle = "#00ff00";
+      ctx.strokeStyle = boxColor;
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, width, height);
 
       // Draw label background
-      ctx.fillStyle = "rgba(0, 255, 0, 0.8)";
-      ctx.fillRect(x, y - 30, 150, 25);
+      ctx.fillStyle = labelBgColor;
+      ctx.fillRect(x, y - 60, 200, 55);
 
       // Draw label text
       ctx.fillStyle = "#000";
@@ -196,7 +210,22 @@ const FaceDetectionClient = () => {
       ctx.fillText(
         `Face ${index + 1}: ${(confidence * 100).toFixed(1)}%`,
         x + 5,
-        y - 10
+        y - 40
+      );
+
+      // Draw sunglasses status
+      ctx.font = "bold 13px Arial";
+      const sunglassesText = has_sunglasses
+        ? "😎 Sunglasses"
+        : "👀 No Sunglasses";
+      ctx.fillText(sunglassesText, x + 5, y - 22);
+
+      // Draw sunglasses confidence
+      ctx.font = "11px Arial";
+      ctx.fillText(
+        `Confidence: ${(sunglasses_confidence * 100).toFixed(1)}%`,
+        x + 5,
+        y - 7
       );
     });
   };
@@ -235,10 +264,10 @@ const FaceDetectionClient = () => {
           <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-6">
             <h1 className="text-3xl font-bold text-white flex items-center gap-3">
               <Camera className="w-8 h-8" />
-              Real-time Face Detection
+              Real-time Face & Sunglasses Detection
             </h1>
             <p className="text-blue-100 mt-2">
-              WebSocket-based face detection with Python backend
+              WebSocket-based face detection with sunglasses recognition
             </p>
           </div>
 
@@ -331,8 +360,13 @@ const FaceDetectionClient = () => {
                   {detectionResults.faces.map((face, index) => (
                     <div key={index} className="bg-gray-700 rounded-lg p-4">
                       <div className="text-sm text-gray-300">
-                        <div className="font-semibold text-white mb-2">
-                          Face {index + 1}
+                        <div className="font-semibold text-white mb-2 flex items-center gap-2">
+                          <span>Face {index + 1}</span>
+                          {face.has_sunglasses ? (
+                            <span className="text-yellow-400">😎</span>
+                          ) : (
+                            <span className="text-green-400">👀</span>
+                          )}
                         </div>
                         <div>
                           Confidence:{" "}
@@ -345,6 +379,28 @@ const FaceDetectionClient = () => {
                         </div>
                         <div>
                           Size: {face.width}x{face.height}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-gray-600">
+                          <div className="font-semibold text-white">
+                            {face.has_sunglasses
+                              ? "Wearing Sunglasses"
+                              : "No Sunglasses"}
+                          </div>
+                          <div>
+                            S. Confidence:{" "}
+                            <span
+                              className={
+                                face.has_sunglasses
+                                  ? "text-yellow-400"
+                                  : "text-blue-400"
+                              }
+                            >
+                              {(face.sunglasses_confidence * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                          {face.eyes_detected !== undefined && (
+                            <div>Eyes detected: {face.eyes_detected}</div>
+                          )}
                         </div>
                       </div>
                     </div>
