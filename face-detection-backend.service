@@ -1,0 +1,20 @@
+# ==========================================
+# Systemd Service (Linux)
+# ==========================================
+# /etc/systemd/system/face-detection-backend.service
+
+[Unit]
+Description=Face Detection Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/face-detection/backend
+Environment="PATH=/opt/face-detection/venv/bin"
+ExecStart=/opt/face-detection/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
