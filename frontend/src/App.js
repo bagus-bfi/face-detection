@@ -187,22 +187,33 @@ const FaceDetectionClient = () => {
         confidence,
         has_sunglasses,
         sunglasses_confidence,
+        has_mask,
+        mask_confidence,
       } = face;
 
-      // Choose color based on sunglasses detection
-      const boxColor = has_sunglasses ? "#FFD700" : "#00ff00"; // Gold for sunglasses, green for no sunglasses
-      const labelBgColor = has_sunglasses
-        ? "rgba(255, 215, 0, 0.8)"
-        : "rgba(0, 255, 0, 0.8)";
+      // Choose color based on mask and sunglasses detection
+      let boxColor = "#00ff00"; // Green default
+      let labelBgColor = "rgba(0, 255, 0, 0.8)";
+
+      if (has_mask && has_sunglasses) {
+        boxColor = "#FF6B6B"; // Red for both
+        labelBgColor = "rgba(255, 107, 107, 0.8)";
+      } else if (has_mask) {
+        boxColor = "#4ECDC4"; // Teal for mask
+        labelBgColor = "rgba(78, 205, 196, 0.8)";
+      } else if (has_sunglasses) {
+        boxColor = "#FFD700"; // Gold for sunglasses
+        labelBgColor = "rgba(255, 215, 0, 0.8)";
+      }
 
       // Draw rectangle
       ctx.strokeStyle = boxColor;
       ctx.lineWidth = 3;
       ctx.strokeRect(x, y, width, height);
 
-      // Draw label background
+      // Draw label background (increased height for mask info)
       ctx.fillStyle = labelBgColor;
-      ctx.fillRect(x, y - 60, 200, 55);
+      ctx.fillRect(x, y - 85, 200, 80);
 
       // Draw label text
       ctx.fillStyle = "#000";
@@ -210,23 +221,32 @@ const FaceDetectionClient = () => {
       ctx.fillText(
         `Face ${index + 1}: ${(confidence * 100).toFixed(1)}%`,
         x + 5,
-        y - 40
+        y - 65
       );
 
       // Draw sunglasses status
-      ctx.font = "bold 13px Arial";
+      ctx.font = "bold 12px Arial";
       const sunglassesText = has_sunglasses
         ? "😎 Sunglasses"
         : "👀 No Sunglasses";
-      ctx.fillText(sunglassesText, x + 5, y - 22);
+      ctx.fillText(sunglassesText, x + 5, y - 48);
 
       // Draw sunglasses confidence
-      ctx.font = "11px Arial";
+      ctx.font = "10px Arial";
       ctx.fillText(
-        `Confidence: ${(sunglasses_confidence * 100).toFixed(1)}%`,
+        `S: ${(sunglasses_confidence * 100).toFixed(1)}%`,
         x + 5,
-        y - 7
+        y - 35
       );
+
+      // Draw mask status
+      ctx.font = "bold 12px Arial";
+      const maskText = has_mask ? "😷 Mask" : "😊 No Mask";
+      ctx.fillText(maskText, x + 5, y - 22);
+
+      // Draw mask confidence
+      ctx.font = "10px Arial";
+      ctx.fillText(`M: ${(mask_confidence * 100).toFixed(1)}%`, x + 5, y - 9);
     });
   };
 
@@ -264,10 +284,11 @@ const FaceDetectionClient = () => {
           <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-6">
             <h1 className="text-3xl font-bold text-white flex items-center gap-3">
               <Camera className="w-8 h-8" />
-              Real-time Face & Sunglasses Detection
+              Real-time Face, Sunglasses & Mask Detection
             </h1>
             <p className="text-blue-100 mt-2">
-              WebSocket-based face detection with sunglasses recognition
+              WebSocket-based face detection with sunglasses and mask
+              recognition
             </p>
           </div>
 
@@ -362,10 +383,14 @@ const FaceDetectionClient = () => {
                       <div className="text-sm text-gray-300">
                         <div className="font-semibold text-white mb-2 flex items-center gap-2">
                           <span>Face {index + 1}</span>
-                          {face.has_sunglasses ? (
+                          {face.has_sunglasses && (
                             <span className="text-yellow-400">😎</span>
-                          ) : (
-                            <span className="text-green-400">👀</span>
+                          )}
+                          {face.has_mask && (
+                            <span className="text-blue-400">😷</span>
+                          )}
+                          {!face.has_sunglasses && !face.has_mask && (
+                            <span className="text-green-400">�</span>
                           )}
                         </div>
                         <div>
@@ -380,11 +405,13 @@ const FaceDetectionClient = () => {
                         <div>
                           Size: {face.width}x{face.height}
                         </div>
+
+                        {/* Sunglasses Info */}
                         <div className="mt-2 pt-2 border-t border-gray-600">
                           <div className="font-semibold text-white">
                             {face.has_sunglasses
-                              ? "Wearing Sunglasses"
-                              : "No Sunglasses"}
+                              ? "😎 Wearing Sunglasses"
+                              : "👀 No Sunglasses"}
                           </div>
                           <div>
                             S. Confidence:{" "}
@@ -400,6 +427,47 @@ const FaceDetectionClient = () => {
                           </div>
                           {face.eyes_detected !== undefined && (
                             <div>Eyes detected: {face.eyes_detected}</div>
+                          )}
+                        </div>
+
+                        {/* Mask Info */}
+                        <div className="mt-2 pt-2 border-t border-gray-600">
+                          <div className="font-semibold text-white">
+                            {face.has_mask ? "😷 Wearing Mask" : "😊 No Mask"}
+                          </div>
+                          <div>
+                            M. Confidence:{" "}
+                            <span
+                              className={
+                                face.has_mask
+                                  ? "text-teal-400"
+                                  : "text-green-400"
+                              }
+                            >
+                              {(face.mask_confidence * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                          {face.mouth_detected !== undefined && (
+                            <div>Mouth detected: {face.mouth_detected}</div>
+                          )}
+                          {face.mask_score !== undefined && (
+                            <div className="text-xs mt-1">
+                              Score:{" "}
+                              <span
+                                className={
+                                  face.mask_score > 0
+                                    ? "text-teal-300"
+                                    : "text-gray-400"
+                                }
+                              >
+                                {face.mask_score}
+                              </span>
+                            </div>
+                          )}
+                          {face.evidence && face.evidence.length > 0 && (
+                            <div className="text-xs mt-1 text-gray-400">
+                              {face.evidence.slice(0, 2).join(", ")}
+                            </div>
                           )}
                         </div>
                       </div>
