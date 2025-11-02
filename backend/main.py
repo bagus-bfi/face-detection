@@ -33,7 +33,7 @@ app.add_middleware(
 
 
 class FaceDetector:
-    """Face detection using OpenCV's Haar Cascade with sunglasses detection"""
+    """Face detection using OpenCV's Haar Cascade with sunglasses and mask detection (DL + CV hybrid)"""
     
     def __init__(self):
         # Using Haar Cascade (fast, CPU-friendly)
@@ -43,6 +43,10 @@ class FaceDetector:
         # Eye cascade for sunglasses detection
         self.eye_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_eye.xml'
+        )
+        # Mouth cascade for mask detection
+        self.mouth_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_smile.xml'
         )
         
         # Initialize MediaPipe Face Mesh for facial landmarks
@@ -54,7 +58,8 @@ class FaceDetector:
             min_tracking_confidence=0.5
         )
         
-        logger.info("FaceDetector initialized with Haar Cascade method")
+        logger.info("FaceDetector initialized")
+
     
     def detect_sunglasses(self, image: np.ndarray, face_bbox: tuple) -> Dict:
         """
@@ -176,8 +181,256 @@ class FaceDetector:
             logger.error(f"Error extracting eye region: {e}")
             return np.array([])
     
+    def detect_mask(self, image: np.ndarray, face_bbox: tuple) -> Dict:
+        """
+        Improved full face analysis with multiple methods
+        Returns: dict with has_mask (bool) and confidence (float)
+        """
+        x, y, w, h = face_bbox
+        
+        # Extract face ROI
+        face_roi = image[y:y+h, x:x+w]
+        gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+        h_roi, w_roi = face_roi.shape[:2]
+        
+        # Initialize scoring system
+        mask_score = 0.0  # Positive = mask, Negative = no mask
+        evidence = []
+        
+        # === METHOD 1: Mouth Detection (Haar Cascade) ===
+        # Try multiple scales for better detection
+        lower_face_y = int(h * 0.4)  # Start from 40% down (include more area)
+        lower_face_roi = gray_roi[lower_face_y:, :]
+        
+        mouth_detections = self.mouth_cascade.detectMultiScale(
+            lower_face_roi,
+            scaleFactor=1.05,  # More sensitive
+            minNeighbors=8,     # Lower threshold
+            minSize=(int(w * 0.12), int(h * 0.08))
+        )
+        
+        if len(mouth_detections) == 0:
+            mask_score += 2.0
+            evidence.append("no_mouth_detected")
+        elif len(mouth_detections) >= 1:
+            mask_score -= 2.0
+            evidence.append("mouth_visible")
+        
+        # === METHOD 2: MediaPipe Face Mesh Analysis ===
+        rgb_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2RGB)
+        results = self.face_mesh.process(rgb_roi)
+        
+        mouth_region_brightness = None
+        
+        if results.multi_face_landmarks:
+            for face_landmarks in results.multi_face_landmarks:
+                # Define key facial regions with MORE comprehensive landmark sets
+                
+                # Mouth region (lips and around mouth)
+                mouth_indices = [0, 11, 12, 13, 14, 15, 16, 17, 37, 39, 40, 61, 84, 91, 
+                                146, 178, 181, 185, 191, 267, 269, 270, 291, 308, 312, 
+                                314, 317, 321, 375, 405, 409]
+                
+                # Nose region
+                nose_indices = [1, 2, 5, 6, 19, 94, 98, 168, 188, 195, 197, 240, 241, 
+                               242, 326, 327, 328, 370, 419, 420, 421, 429, 437, 460, 462]
+                
+                # Cheek region (for texture comparison)
+                left_cheek_indices = [116, 117, 118, 119, 120, 121, 123, 147, 187, 207, 
+                                     216, 234, 227, 216]
+                right_cheek_indices = [345, 346, 347, 348, 349, 350, 352, 376, 411, 427, 
+                                      436, 454, 447, 436]
+                
+                # Eye region (for baseline comparison)
+                left_eye_indices = [33, 133, 159, 145, 246, 161, 160, 144, 163]
+                right_eye_indices = [362, 263, 386, 374, 466, 388, 387, 373, 390]
+                
+                # Extract regions
+                mouth_region = self._get_region_roi(gray_roi, face_landmarks, mouth_indices, w_roi, h_roi)
+                nose_region = self._get_region_roi(gray_roi, face_landmarks, nose_indices, w_roi, h_roi)
+                left_cheek = self._get_region_roi(gray_roi, face_landmarks, left_cheek_indices, w_roi, h_roi)
+                right_cheek = self._get_region_roi(gray_roi, face_landmarks, right_cheek_indices, w_roi, h_roi)
+                left_eye = self._get_region_roi(gray_roi, face_landmarks, left_eye_indices, w_roi, h_roi)
+                right_eye = self._get_region_roi(gray_roi, face_landmarks, right_eye_indices, w_roi, h_roi)
+                
+                # === ANALYSIS 1: Texture Uniformity ===
+                # Masks have more uniform texture than skin
+                if mouth_region.size > 50:
+                    mouth_std = np.std(mouth_region)
+                    mouth_region_brightness = np.mean(mouth_region)
+                    
+                    # Compare with cheeks and eyes for baseline
+                    cheek_std = (np.std(left_cheek) + np.std(right_cheek)) / 2 if left_cheek.size > 0 and right_cheek.size > 0 else 30
+                    eye_std = (np.std(left_eye) + np.std(right_eye)) / 2 if left_eye.size > 0 and right_eye.size > 0 else 30
+                    
+                    # If mouth region is significantly more uniform than cheeks/eyes
+                    if mouth_std < 18 and (cheek_std > 25 or eye_std > 25):
+                        mask_score += 1.5
+                        evidence.append(f"uniform_mouth_texture(std={mouth_std:.1f})")
+                    elif mouth_std > 25:
+                        mask_score -= 1.5
+                        evidence.append(f"varied_mouth_texture(std={mouth_std:.1f})")
+                
+                # === ANALYSIS 2: Nose Region Analysis ===
+                if nose_region.size > 50:
+                    nose_std = np.std(nose_region)
+                    nose_brightness = np.mean(nose_region)
+                    
+                    # Masks covering nose show uniform texture
+                    if nose_std < 16:
+                        mask_score += 1.2
+                        evidence.append(f"uniform_nose(std={nose_std:.1f})")
+                    elif nose_std > 28:
+                        mask_score -= 1.0
+                        evidence.append(f"visible_nose_detail(std={nose_std:.1f})")
+                
+                # === ANALYSIS 3: Brightness Pattern Analysis ===
+                # Split face into thirds: upper, middle, lower
+                third_h = h_roi // 3
+                upper_third = gray_roi[:third_h, :]
+                middle_third = gray_roi[third_h:2*third_h, :]
+                lower_third = gray_roi[2*third_h:, :]
+                
+                upper_brightness = np.mean(upper_third)
+                middle_brightness = np.mean(middle_third)
+                lower_brightness = np.mean(lower_third)
+                
+                # Calculate brightness gradients
+                upper_to_middle_diff = abs(upper_brightness - middle_brightness)
+                middle_to_lower_diff = abs(middle_brightness - lower_brightness)
+                upper_to_lower_diff = abs(upper_brightness - lower_brightness)
+                
+                # Masks create distinct brightness boundaries
+                if middle_to_lower_diff > 15 and upper_to_middle_diff < 10:
+                    mask_score += 1.3
+                    evidence.append(f"brightness_boundary(diff={middle_to_lower_diff:.1f})")
+                elif upper_to_lower_diff > 25:
+                    mask_score += 1.0
+                    evidence.append(f"strong_brightness_diff({upper_to_lower_diff:.1f})")
+                elif upper_to_lower_diff < 10:
+                    mask_score -= 0.8
+                    evidence.append(f"uniform_face_brightness({upper_to_lower_diff:.1f})")
+                
+                # === ANALYSIS 4: Edge Detection (Full Face) ===
+                # Masks create distinct horizontal edges
+                edges = cv2.Canny(gray_roi, 50, 150)
+                
+                # Count horizontal edges in lower 60% of face
+                lower_60_y = int(h_roi * 0.4)
+                lower_edges = edges[lower_60_y:, :]
+                
+                # Sum edges along rows to find strong horizontal patterns
+                horizontal_edge_profile = np.sum(lower_edges, axis=1)
+                
+                # Look for strong horizontal edge (mask boundary)
+                max_horizontal_edge = np.max(horizontal_edge_profile) if len(horizontal_edge_profile) > 0 else 0
+                mean_horizontal_edge = np.mean(horizontal_edge_profile) if len(horizontal_edge_profile) > 0 else 0
+                
+                if max_horizontal_edge > mean_horizontal_edge * 3 and max_horizontal_edge > 100:
+                    mask_score += 1.5
+                    evidence.append(f"horizontal_edge_detected({max_horizontal_edge:.0f})")
+                
+                # === ANALYSIS 5: Color Analysis (if available) ===
+                # Masks often have different color than skin
+                if face_roi.shape[2] == 3:
+                    # Convert to HSV for better color analysis
+                    hsv_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2HSV)
+                    
+                    # Split into upper and lower
+                    lower_60_y_start = int(h_roi * 0.4)
+                    upper_face_hsv = hsv_roi[:lower_60_y_start, :]
+                    lower_face_hsv = hsv_roi[lower_60_y_start:, :]
+                    
+                    # Compare saturation (masks often less saturated than skin)
+                    upper_saturation = np.mean(upper_face_hsv[:, :, 1])
+                    lower_saturation = np.mean(lower_face_hsv[:, :, 1])
+                    saturation_diff = abs(upper_saturation - lower_saturation)
+                    
+                    if saturation_diff > 20:
+                        mask_score += 0.8
+                        evidence.append(f"color_saturation_diff({saturation_diff:.1f})")
+        
+        # === FINAL DECISION ===
+        # Convert score to probability
+        # Score > 3.0 = very likely mask
+        # Score 1.5-3.0 = likely mask
+        # Score -1.5 to 1.5 = uncertain
+        # Score < -1.5 = likely no mask
+        
+        has_mask = mask_score > 1.5
+        
+        # Calculate confidence based on score magnitude
+        if mask_score > 4.0:
+            confidence = 0.95
+            method_used = "high_confidence_mask"
+        elif mask_score > 3.0:
+            confidence = 0.90
+            method_used = "strong_mask_indicators"
+        elif mask_score > 1.5:
+            confidence = 0.80
+            method_used = "moderate_mask_indicators"
+        elif mask_score > 0.5:
+            confidence = 0.65
+            method_used = "weak_mask_indicators"
+        elif mask_score > -0.5:
+            confidence = 0.50
+            method_used = "uncertain"
+        elif mask_score > -1.5:
+            confidence = 0.70
+            method_used = "weak_no_mask"
+        elif mask_score > -3.0:
+            confidence = 0.85
+            method_used = "moderate_no_mask"
+        else:
+            confidence = 0.90
+            method_used = "strong_no_mask"
+        
+        # Adjust has_mask for uncertain cases
+        if abs(mask_score) < 1.0:
+            # Very uncertain - default to no mask with low confidence
+            has_mask = False
+            confidence = 0.55
+            method_used = "uncertain_default_no_mask"
+        
+        return {
+            "has_mask": has_mask,
+            "confidence": confidence,
+            "method": method_used,
+            "mouth_detected": len(mouth_detections),
+            "mouth_brightness": mouth_region_brightness,
+            "mask_score": round(mask_score, 2),
+            "evidence": evidence[:5]  # Top 5 evidence points
+        }
+    
+    def _get_region_roi(self, gray_img: np.ndarray, landmarks, indices: List[int], 
+                       width: int, height: int) -> np.ndarray:
+        """Extract region from face using landmarks"""
+        try:
+            points = []
+            for idx in indices:
+                landmark = landmarks.landmark[idx]
+                x = int(landmark.x * width)
+                y = int(landmark.y * height)
+                points.append([x, y])
+            
+            points = np.array(points)
+            x_min, y_min = points.min(axis=0)
+            x_max, y_max = points.max(axis=0)
+            
+            # Add padding
+            padding = 5
+            x_min = max(0, x_min - padding)
+            y_min = max(0, y_min - padding)
+            x_max = min(width, x_max + padding)
+            y_max = min(height, y_max + padding)
+            
+            return gray_img[y_min:y_max, x_min:x_max]
+        except Exception as e:
+            logger.error(f"Error extracting region: {e}")
+            return np.array([])
+    
     def detect(self, image: np.ndarray) -> List[Dict]:
-        """Detect faces using Haar Cascade with sunglasses detection"""
+        """Detect faces using Haar Cascade with sunglasses and mask detection"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(
             gray,
@@ -191,6 +444,9 @@ class FaceDetector:
             # Detect sunglasses for each face
             sunglasses_info = self.detect_sunglasses(image, (x, y, w, h))
             
+            # Detect mask for each face
+            mask_info = self.detect_mask(image, (x, y, w, h))
+            
             results.append({
                 "x": int(x),
                 "y": int(y),
@@ -200,7 +456,11 @@ class FaceDetector:
                 "has_sunglasses": sunglasses_info["has_sunglasses"],
                 "sunglasses_confidence": sunglasses_info["confidence"],
                 "sunglasses_detection_method": sunglasses_info["method"],
-                "eyes_detected": sunglasses_info["eyes_detected"]
+                "eyes_detected": sunglasses_info["eyes_detected"],
+                "has_mask": mask_info["has_mask"],
+                "mask_confidence": mask_info["confidence"],
+                "mask_detection_method": mask_info["method"],
+                "mouth_detected": mask_info["mouth_detected"]
             })
         
         return results
